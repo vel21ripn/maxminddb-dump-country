@@ -142,7 +142,7 @@ void country_dump(MMDB_entry_s *e,int ipv6,
         if(r != MMDB_SUCCESS) break;
         mmdb_str_utf8(&d,country_name,sizeof(country_name));
 
-        fprintf(CSV_EN_fd,"%d,%s,%s,%s,%s,\"%s\",%d",
+        fprintf(CSV_EN_fd,"%d,%s,%s,%s,%s,\"%s\",%d\n",
                 geoname_id,locale_code,continent_code,continent_name,
                 country_iso_code,country_name,is_in_european_union);
         return;
