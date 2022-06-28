@@ -28,10 +28,77 @@ int opt_v = 0;
 int opt_4 = 1;
 int opt_6 = 1;
 int opt_csv = 0;
+
+int opt_asn = 0;
+char *opt_asn_val = NULL;
+
+int *asn_list = NULL;
+int asn_list_last = 0;
+int asn_list_max = 0;
+
 int opt_xtgeo = 0;
 char output_dir[256];
 char *CSV_IP_hdr = "network,geoname_id,registered_country_geoname_id,represented_country_geoname_id,is_anonymous_proxy,is_satellite_provider\n";
 char *CSV_EN_hdr = "geoname_id,locale_code,continent_code,continent_name,country_iso_code,country_name,is_in_european_union\n";
+
+void parse_asn_list(const char *arg) {
+    char *buf,*v,*n,*e;
+    if(!strcmp(arg,"all")) {
+        opt_asn = -1;
+        return;
+    }
+    buf = strdup(arg);
+    if(!buf) abort();
+    v = buf;
+    while((n = strtok(v,",")) != NULL) {
+        v = NULL;
+        int asn2,asn = strtol(n,&e,10);
+        asn2 = asn;
+        if(*e) {
+            if(*e != '-') {
+                printf("Invalid ASN number %s\n",n);
+                exit(1);
+            }
+            asn2 = strtol(e+1,&e,10);
+            if(*e) {
+                printf("Invalid ASN number %s\n",n);
+                exit(1);
+            }
+            if(asn2 < asn) {
+                printf("Wrong ASN range %s\n",n);
+                exit(1);
+            }
+        }
+        if(asn < 0 || asn2 < 0) {
+            printf("Invalid ASN number %s\n",n);
+            exit(1);
+        }
+        if(asn_list_last >= asn_list_max) {
+            asn_list_max += 256;
+            asn_list = realloc(asn_list,sizeof(int)*asn_list_max);
+            if(!asn_list) abort();
+        }
+        asn_list[asn_list_last++] = asn;
+        asn_list[asn_list_last++] = asn2;
+        opt_asn = asn_list_last == 1 ? asn:-2;
+    }
+    free(buf);
+}
+
+void parse_asn_val(const char *arg) {
+    if(!strcmp(arg,"ASNUM")) 
+        opt_asn_val = (char *)1;
+      else
+        opt_asn_val = strdup(arg);
+}
+
+int match_asn(int asn) {
+    int i;
+    if(opt_asn > 0) return asn == opt_asn;
+    if(opt_asn == -1) return 1;
+    for(i=0; i < asn_list_last; i+=2) if(asn >= asn_list[i] && asn <= asn_list[i+1]) return 1;
+    return 0;
+}
 
 int country2idx(char *cn) {
     if(cn[0] >= 'A' && cn[0] <= 'Z' &&
@@ -57,13 +124,56 @@ void mmdb_str_utf8(const MMDB_entry_data_s *d,char *buf,size_t buf_len) {
         buf[d->data_size] = 0;
 }
 
+static int last_asn = -1;
+static char last_isp_name[128];
+
 void country_dump(MMDB_entry_s *e,int ipv6,
         const char *ip_buf, int masklen,
         char *cn_buf,size_t cn_buf_len) {
     int r,idx;
-    int geoname_id,r_geoname_id;
+    int geoname_id,r_geoname_id,asn;
 
     MMDB_entry_data_s d;
+
+    if(opt_asn) {
+        char isp_name[128];
+        r = MMDB_get_value(e,&d,"autonomous_system_number",NULL);
+        if(r != MMDB_SUCCESS) {
+            fprintf(stderr,"Missing autonomous_system_number\n");
+            exit(1);
+        }
+        if(d.type != MMDB_DATA_TYPE_UINT32) abort();
+        asn  = d.uint32;
+        if(!match_asn(asn)) return;
+        r = MMDB_get_value(e,&d,"autonomous_system_organization",NULL);
+        if(r == MMDB_SUCCESS)
+            mmdb_str_utf8(&d,isp_name,sizeof(isp_name));
+          else
+            strcpy(isp_name,"Unknown");
+
+        if(last_asn == asn && !strcmp(isp_name,last_isp_name)) {
+            if(opt_asn_val) {
+                if(opt_asn_val == (char *)1)
+                    fprintf(stdout,"%s/%d %6d;\n",ip_buf,masklen,asn);
+                  else
+                    fprintf(stdout,"%s/%d %s;\n",ip_buf,masklen,opt_asn_val);
+            } else {
+                fprintf(stdout,"%s/%d %6d \"%s\"\n",ip_buf,masklen,asn,isp_name);
+            }
+            return;
+        }
+        last_asn = asn;
+        strncpy(last_isp_name,isp_name,sizeof(last_isp_name));
+        if(opt_asn_val) {
+            if(opt_asn_val == (char *)1)
+                fprintf(stdout,"%s/%d %6d; # A%-6d \"%s\"\n",ip_buf,masklen,asn,asn,isp_name);
+              else
+                fprintf(stdout,"%s/%d %s; # A%-6d \"%s\"\n",ip_buf,masklen,opt_asn_val,asn,isp_name);
+        } else {
+            fprintf(stdout,"%s/%d %6d \"%s\"\n",ip_buf,masklen,asn,isp_name);
+        }
+        return;
+    }
 
     do {
         r = MMDB_get_value(e,&d,"country","iso_code",NULL);
@@ -187,10 +297,13 @@ void p_dump(int l, uint8_t *path, MMDB_entry_s *e) {
     inet_ntop(start ? AF_INET:AF_INET6,&path[start],ip_buf1,sizeof(ip_buf1)-1);
 
     country_dump(e, start == 0, ip_buf1, ml, cn_buf, sizeof(cn_buf));
+    if(opt_asn) 
+        return;
 
     memcpy(path2,path,16);
     sethostbit(path2,l+1);
     inet_ntop(start ? AF_INET:AF_INET6,&path2[start],ip_buf2,sizeof(ip_buf2)-1);
+
     cind = country2idx(cn_buf);
     if(cind < 0) return;
 
@@ -237,9 +350,11 @@ void tree_walk(int rn,int l, uint8_t *path) {
 }
 
 void usage(void) {
-    printf("%s [-4] [-6] [-v] [-c] [-o outputdir] file.mmdb\n",progname);
+    printf("%s [-4] [-6] [-v] [-c] [-N ASNUM|string ][-A all|asnum[,asnum...]] [-o outputdir] file.mmdb\n",progname);
+    printf("\t asnum: number | number-number\n");
     exit(1);
 }
+
 int main(int argc, char **argv)
 {
     int fd,c,l,status;
@@ -249,12 +364,14 @@ int main(int argc, char **argv)
     
     progname = strdup(argv[0]);
 
-    while((c=getopt(argc,argv,"46cvo:")) != -1) {
+    while((c=getopt(argc,argv,"46cvo:A:N:")) != -1) {
       switch(c) {
         case 'c': opt_csv = 1; break;
         case '4': opt_6 = 0; break;
         case '6': opt_4 = 0; break;
         case 'v': opt_v++; break;
+        case 'A': parse_asn_list(optarg); break;
+        case 'N': parse_asn_val(optarg); break;
         case 'o': strncpy(output_dir,optarg,sizeof(output_dir)-2);
                   opt_xtgeo = 1;
                   break;
@@ -273,8 +390,12 @@ int main(int argc, char **argv)
         perror("mmdb file:");
         exit(1);
     }
-    if(!opt_xtgeo && !opt_csv) {
-        fprintf(stderr,"%s: -o or -c is required!\n",progname);
+    if(!opt_xtgeo && !opt_csv && !opt_asn) {
+        fprintf(stderr,"%s: -o or -c or -a is required!\n",progname);
+        exit(1);
+    }
+    if(opt_asn && (opt_xtgeo  || opt_csv)) {
+        fprintf(stderr,"%s: cant use -A with -o or -c\n",progname);
         exit(1);
     }
     if(opt_xtgeo) {
@@ -323,7 +444,7 @@ int main(int argc, char **argv)
     memset(path,0,sizeof(path));
     tree_walk(0,0,path);
     MMDB_close(&mmdb);
-
+    if(opt_asn) exit(0);
     for(fd = 0; fd < sizeof(CFD4)/sizeof(CFD4[0]); fd++) {
         if(opt_xtgeo) {
             if(CFD4[fd]) fclose(CFD4[fd]);
