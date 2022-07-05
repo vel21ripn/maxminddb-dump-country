@@ -323,6 +323,7 @@ void p_dump(int l, uint8_t *path, MMDB_entry_s *e) {
     fwrite(&path[start],16-start,1,CFD[cind]);
     fwrite(&path2[start],16-start,1,CFD[cind]);
 }
+static int skip_n96 = 0;
 
 void tree_walk(int rn,int l, uint8_t *path) {
     MMDB_search_node_s node;
@@ -330,6 +331,10 @@ void tree_walk(int rn,int l, uint8_t *path) {
     if(l > 128) return;
     if(l >= mmdb.depth) return;
     if(rn >= mmdb.metadata.node_count) return;
+    if(rn == mmdb.ipv4_start_node.node_value) {
+        if(skip_n96) return;
+        skip_n96 = 1;
+    }
     int result = MMDB_read_node(&mmdb, rn,&node);
     if(result != MMDB_SUCCESS) abort();
 
@@ -442,7 +447,10 @@ int main(int argc, char **argv)
             fprintf(CSV_EN_fd,"%s",CSV_EN_hdr);
     }
     memset(path,0,sizeof(path));
-    tree_walk(0,0,path);
+    if(!opt_6) {
+        tree_walk(mmdb.ipv4_start_node.node_value,mmdb.ipv4_start_node.netmask,path);
+    } else
+        tree_walk(0,0,path);
     MMDB_close(&mmdb);
     if(opt_asn) exit(0);
     for(fd = 0; fd < sizeof(CFD4)/sizeof(CFD4[0]); fd++) {
