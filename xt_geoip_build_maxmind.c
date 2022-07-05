@@ -9,6 +9,9 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+char *country_name = "/usr/share/GeoIP/GeoLite2-Country.mmdb";
+char *asn_name = "/usr/share/GeoIP/GeoLite2-ASN.mmdb";
+
 char *progname = NULL; 
 char *filename = NULL; 
 MMDB_s mmdb;
@@ -37,7 +40,7 @@ int asn_list_last = 0;
 int asn_list_max = 0;
 
 int opt_xtgeo = 0;
-char output_dir[256];
+char output_dir[256] = { 0, };
 char *CSV_IP_hdr = "network,geoname_id,registered_country_geoname_id,represented_country_geoname_id,is_anonymous_proxy,is_satellite_provider\n";
 char *CSV_EN_hdr = "geoname_id,locale_code,continent_code,continent_name,country_iso_code,country_name,is_in_european_union\n";
 
@@ -389,7 +392,10 @@ int main(int argc, char **argv)
     }
     if(optind < argc && !access(argv[optind],R_OK)) {
         filename = strdup(argv[optind]);
-    } else usage();
+    } else {
+        filename = opt_asn ? asn_name:country_name;
+        if(access(filename,R_OK)) usage();
+    }
 
     if(stat(filename,&st)) {
         perror("mmdb file:");
